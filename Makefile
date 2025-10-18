@@ -19,7 +19,7 @@ dev-install:
 
 build:
 	@echo "Building hermetic binary with PyInstaller..."
-	@uv run pyinstaller --clean --onefile --name $(BINARY_NAME) sec
+	@uv run pyinstaller --clean --onefile --name $(BINARY_NAME) __main__.py
 	@echo "Build complete. Binary located at: $(DIST_DIR)/$(BINARY_NAME)"
 	@echo "This binary can now be deployed independently."
 
