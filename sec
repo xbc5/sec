@@ -44,6 +44,13 @@ class PracticeArgs:
 
 
 @dataclass
+class ShowArgs:
+    """Arguments for the show command."""
+
+    path: Optional[str] = None
+
+
+@dataclass
 class Args:
     """Top-level arguments container."""
 
@@ -52,6 +59,7 @@ class Args:
     edit: Optional[EditArgs] = None
     gen: Optional[GenArgs] = None
     practice: Optional[PracticeArgs] = None
+    show: Optional[ShowArgs] = None
 
 
 def parse_args() -> Args:
@@ -113,6 +121,17 @@ def parse_args() -> Args:
         help="Path to the credentials entry (uses fzf if not provided)",
     )
 
+    # Show subcommand
+    show_parser = subparsers.add_parser(
+        "show", help="Show credentials entry details"
+    )
+    show_parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Path to the credentials entry (uses fzf if not provided)",
+    )
+
     parsed = parser.parse_args()
 
     # Build structured Args based on command
@@ -129,6 +148,8 @@ def parse_args() -> Args:
             )
         case "practice":
             return Args(command="practice", practice=PracticeArgs(path=parsed.path))
+        case "show":
+            return Args(command="show", show=ShowArgs(path=parsed.path))
         case _:
             return Args(command=parsed.command)
 
@@ -380,6 +401,25 @@ def practice_password(args: Args):
         return
 
 
+def show_credentials(args: Args):
+    """Display credentials entry using gopass show."""
+    assert args.show is not None
+
+    # Select path if not provided
+    if not args.show.path:
+        args.show.path = select_path_with_fzf()
+
+    if not args.show.path:
+        print("No path selected. Exiting.", file=sys.stderr)
+        return
+
+    # Display the credentials entry using gopass show
+    subprocess.run(
+        ["gopass", "show", args.show.path],
+        check=True,
+    )
+
+
 def main():
     """Main entry point for the sec script."""
     args = parse_args()
@@ -393,6 +433,8 @@ def main():
             gen_and_copy(args)
         case "practice":
             practice_password(args)
+        case "show":
+            show_credentials(args)
         case _:
             raise ValueError(f"Unknown command: {args.command}")
 
