@@ -104,81 +104,51 @@ def select_path_with_fzf() -> Optional[str]:
     return selected if selected else None
 
 
-# FIXME: again, no need for this to exist
-def copy_to_clipboard(text: str) -> bool:
-    """Copy text to clipboard using xclip or xsel."""
-    # Try xclip first, then xsel
-    for cmd in [["xclip", "-selection", "clipboard"], ["xsel", "--clipboard"]]:
-        try:
-            subprocess.run(
-                cmd,
-                input=text.encode(),
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
-
-    print("Error: No clipboard tool found (xclip or xsel)", file=sys.stderr)
-    return False
-
-
-# FIXME: rename "copy field to clipboard"
-def get_field_from_gopass(args: Args, field: str) -> Optional[str]:
-    """Retrieve a specific field value from gopass."""
+def copy_field_to_clipboard(args: Args, field: str) -> bool:
+    """Copy a field from gopass directly to clipboard."""
     assert args.copy is not None
     assert args.copy.path is not None
 
-    # FIXME: gopass show -c path fieldname -- That will copy the field to the clipboard
     try:
-        # Special handling for 'password' field which is the secret itself
+        # Use gopass's built-in clipboard functionality
         if field.lower() == "password":
-            result = subprocess.run(
-                ["gopass", "show", "-o", args.copy.path],
-                capture_output=True,
-                text=True,
+            subprocess.run(
+                ["gopass", "show", "-c", args.copy.path],
                 check=True,
             )
         else:
-            # For other fields, use gopass show with field name
-            result = subprocess.run(
-                ["gopass", "show", "-o", args.copy.path, field],
-                capture_output=True,
-                text=True,
+            subprocess.run(
+                ["gopass", "show", "-c", args.copy.path, field],
                 check=True,
             )
-
-        return result.stdout.strip()
+        return True
 
     except subprocess.CalledProcessError:
         print(
-            f"Error: Could not retrieve field '{field}' from {args.copy.path}",
+            f"Error: Could not copy field '{field}' from {args.copy.path}",
             file=sys.stderr,
         )
-        return None
+        return False
 
 
-# FIXME: delete this stupid fucking function; we shall use copy_file_to_clipboard directly
 def copy_credentials(args: Args):
     """Copy credentials to clipboard in sequence."""
     assert args.copy is not None
-    assert args.copy.path is not None
+
+    # Select path if not provided
+    if not args.copy.path:
+        args.copy.path = select_path_with_fzf()
+
+    if not args.copy.path:
+        print("No path selected. Exiting.", file=sys.stderr)
+        return
 
     # Copy each field in sequence
     for i, field in enumerate(args.copy.fields):
-        value = get_field_from_gopass(args, field)
-
-        if value is None:
-            print(f"Skipping field '{field}' - not found", file=sys.stderr)
-            continue
-
-        if copy_to_clipboard(value):
+        if copy_field_to_clipboard(args, field):
             print(f"Copied '{field}' to clipboard")
         else:
-            print(f"Failed to copy '{field}'", file=sys.stderr)
-            continue
+            raise RuntimeError(f"Failed to copy '{field}'")
 
         # Wait for Enter before copying next field (except for last field)
         if i < len(args.copy.fields) - 1:
