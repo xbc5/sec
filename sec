@@ -37,6 +37,13 @@ class GenArgs:
 
 
 @dataclass
+class PracticeArgs:
+    """Arguments for the practice command."""
+
+    path: Optional[str] = None
+
+
+@dataclass
 class Args:
     """Top-level arguments container."""
 
@@ -44,6 +51,7 @@ class Args:
     copy: Optional[CopyArgs] = None
     edit: Optional[EditArgs] = None
     gen: Optional[GenArgs] = None
+    practice: Optional[PracticeArgs] = None
 
 
 def parse_args() -> Args:
@@ -94,6 +102,17 @@ def parse_args() -> Args:
         help="Generate a passphrase using xkcdpass instead of pwgen (for password/entry)",
     )
 
+    # Practice subcommand
+    practice_parser = subparsers.add_parser(
+        "practice", help="Practice memorizing a password"
+    )
+    practice_parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Path to the credentials entry (uses fzf if not provided)",
+    )
+
     parsed = parser.parse_args()
 
     # Build structured Args based on command
@@ -108,6 +127,8 @@ def parse_args() -> Args:
                 command="gen",
                 gen=GenArgs(type=parsed.type, path=parsed.path, words=parsed.words),
             )
+        case "practice":
+            return Args(command="practice", practice=PracticeArgs(path=parsed.path))
         case _:
             return Args(command=parsed.command)
 
@@ -307,6 +328,58 @@ def gen_and_copy(args: Args):
     )
 
 
+def practice_password(args: Args):
+    """Practice memorizing a password by repeatedly entering it."""
+    assert args.practice is not None
+
+    # Select path if not provided
+    if not args.practice.path:
+        args.practice.path = select_path_with_fzf()
+
+    if not args.practice.path:
+        print("No path selected. Exiting.", file=sys.stderr)
+        return
+
+    # Retrieve the password from gopass
+    try:
+        result = subprocess.run(
+            ["gopass", "show", "--password", args.practice.path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        actual_password = result.stdout.strip()
+    except subprocess.CalledProcessError:
+        print(
+            f"Error: Could not retrieve password from {args.practice.path}",
+            file=sys.stderr,
+        )
+        return
+
+    # Practice loop - continue until user enters correct password
+    print(f"Practice mode for: {args.practice.path}")
+    print("Type 'show' to reveal the password, or enter the password to check.")
+
+    try:
+        while True:
+            user_input = input("Enter password: ")
+
+            # Check if user wants to see the password
+            if user_input == "show":
+                print(f"Password: {actual_password}")
+                continue
+
+            # Check if the entered password matches
+            if user_input == actual_password:
+                print("Success! Password correct.")
+                break
+            else:
+                print("Incorrect. Try again.")
+    except KeyboardInterrupt:
+        print("\nPractice cancelled.")
+        return
+
+
 def main():
     """Main entry point for the sec script."""
     args = parse_args()
@@ -318,6 +391,8 @@ def main():
             edit_credentials(args)
         case "gen":
             gen_and_copy(args)
+        case "practice":
+            practice_password(args)
         case _:
             raise ValueError(f"Unknown command: {args.command}")
 
