@@ -171,8 +171,8 @@ def parse_args() -> Args:
         "--fields",
         "-f",
         type=str,
-        default="user_id,password",
-        help="Comma-separated field names to copy (default: user_id,password)",
+        default="user_id,password,totp",
+        help="Comma-separated field names to copy (default: user_id,password,totp)",
     )
 
     # Edit subcommand
@@ -285,6 +285,20 @@ def select_path_with_fzf() -> Optional[str]:
     return selected if selected else None
 
 
+def has_totp_key(path: str) -> bool:
+    """Check if a gopass entry has a totp key configured."""
+    try:
+        # Check if totp field exists - returns non-zero if not present
+        subprocess.run(
+            ["gopass", "show", path, "totp"],
+            capture_output=True,
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 def copy_field_to_clipboard(args: Args, field: str) -> bool:
     """Copy a field from gopass directly to clipboard."""
     assert args.copy is not None
@@ -296,6 +310,14 @@ def copy_field_to_clipboard(args: Args, field: str) -> bool:
             case "password":
                 subprocess.run(
                     ["gopass", "show", "-c", args.copy.path],
+                    check=True,
+                )
+            case "totp":
+                # Check if totp key exists before attempting to copy
+                if not has_totp_key(args.copy.path):
+                    return False
+                subprocess.run(
+                    ["gopass", "totp", "-c", args.copy.path],
                     check=True,
                 )
             case _:
@@ -348,8 +370,6 @@ def copy_credentials(args: Args):
     for i, field in enumerate(args.copy.fields):
         if copy_field_to_clipboard(args, field):
             print(f"Copied '{field}' to clipboard")
-        else:
-            raise RuntimeError(f"Failed to copy '{field}'")
 
         # Wait for Enter before copying next field (except for last field)
         if i < len(args.copy.fields) - 1:
