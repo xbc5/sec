@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""
+sec - A gopass credential management tool for copying and generating credentials.
+"""
+
+import argparse
+import random
+import string
+import subprocess
+import sys
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class CopyArgs:
+    """Arguments for the copy command."""
+
+    fields: list[str]
+    path: Optional[str] = None
+
+
+@dataclass
+class GenerateArgs:
+    """Arguments for the generate command."""
+
+    path: str
+    words: bool = False
+
+
+@dataclass
+class Args:
+    """Top-level arguments container."""
+
+    command: str
+    copy: Optional[CopyArgs] = None
+    generate: Optional[GenerateArgs] = None
+
+
+def parse_args() -> Args:
+    """Parse command-line arguments into structured dataclasses."""
+    parser = argparse.ArgumentParser(
+        description="Manage gopass credentials with copy and generate commands"
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Copy subcommand
+    copy_parser = subparsers.add_parser("copy", help="Copy credentials to clipboard")
+    copy_parser.add_argument(
+        "--fields",
+        "-f",
+        type=str,
+        default="user_id,password",
+        help="Comma-separated field names to copy (default: user_id,password)",
+    )
+
+    # Generate subcommand
+    gen_parser = subparsers.add_parser(
+        "generate", help="Generate a new credentials entry"
+    )
+    gen_parser.add_argument("path", help="Path for the new credentials entry")
+    gen_parser.add_argument(
+        "--words",
+        "-w",
+        action="store_true",
+        help="Generate a passphrase using xkcdpass instead of pwgen",
+    )
+
+    parsed = parser.parse_args()
+
+    # Build structured Args based on command
+    if parsed.command == "copy":
+        fields_list = [f.strip() for f in parsed.fields.split(",")]
+        return Args(command="copy", copy=CopyArgs(fields=fields_list))
+    elif parsed.command == "generate":
+        return Args(
+            command="generate",
+            generate=GenerateArgs(path=parsed.path, words=parsed.words),
+        )
+
+    return Args(command=parsed.command)
+
+
+def select_path_with_fzf() -> Optional[str]:
+    """Prompt user to select a gopass path using fzf."""
+    try:
+        # Get list of gopass paths
+        gopass_list = subprocess.run(
+            ["gopass", "ls", "--flat"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Pipe to fzf for selection
+        fzf_result = subprocess.run(
+            ["fzf"],
+            input=gopass_list.stdout,
+            capture_output=True,
+            text=True,
+        )
+
+        # Return selected path, stripping whitespace
+        selected = fzf_result.stdout.strip()
+        return selected if selected else None
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error selecting path: {e}", file=sys.stderr)
+        return None
+    except FileNotFoundError:
+        print("Error: fzf or gopass not found in PATH", file=sys.stderr)
+        return None
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text to clipboard using xclip or xsel."""
+    # Try xclip first, then xsel
+    for cmd in [["xclip", "-selection", "clipboard"], ["xsel", "--clipboard"]]:
+        try:
+            subprocess.run(
+                cmd,
+                input=text.encode(),
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+
+    print("Error: No clipboard tool found (xclip or xsel)", file=sys.stderr)
+    return False
+
+
+def get_field_from_gopass(path: str, field: str) -> Optional[str]:
+    """Retrieve a specific field value from gopass."""
+    try:
+        # Special handling for 'password' field which is the secret itself
+        if field.lower() == "password":
+            result = subprocess.run(
+                ["gopass", "show", "-o", path],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        else:
+            # For other fields, use gopass show with field name
+            result = subprocess.run(
+                ["gopass", "show", "-o", path, field],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+        return result.stdout.strip()
+
+    except subprocess.CalledProcessError:
+        print(f"Error: Could not retrieve field '{field}' from {path}", file=sys.stderr)
+        return None
+
+
+def copy_credentials(args: CopyArgs):
+    """Copy credentials to clipboard in sequence."""
+    # Select path if not provided
+    if not args.path:
+        args.path = select_path_with_fzf()
+
+    if not args.path:
+        print("No path selected. Exiting.", file=sys.stderr)
+        return
+
+    # Copy each field in sequence
+    for i, field in enumerate(args.fields):
+        value = get_field_from_gopass(args.path, field)
+
+        if value is None:
+            print(f"Skipping field '{field}' - not found", file=sys.stderr)
+            continue
+
+        if copy_to_clipboard(value):
+            print(f"Copied '{field}' to clipboard")
+        else:
+            print(f"Failed to copy '{field}'", file=sys.stderr)
+            continue
+
+        # Wait for Enter before copying next field (except for last field)
+        if i < len(args.fields) - 1:
+            input("Press Enter to copy next field...")
+
+
+def generate_random_user_id() -> str:
+    """Generate a random user_id: 5 chars from [a-z0-9] with at most 1 number."""
+    # Start with 5 lowercase letters
+    chars = random.choices(string.ascii_lowercase, k=5)
+
+    # Randomly decide if we include a number (50% chance)
+    if random.choice([True, False]):
+        # Replace a random position with a number
+        position = random.randint(0, 4)
+        chars[position] = random.choice(string.digits)
+
+    return "".join(chars)
+
+
+def generate_password(use_words: bool = False) -> str:
+    """Generate a password using pwgen or xkcdpass."""
+    if use_words:
+        # Generate 20-word passphrase using xkcdpass
+        try:
+            result = subprocess.run(
+                ["xkcdpass", "-n", "20"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("Error: xkcdpass not found, falling back to pwgen", file=sys.stderr)
+            use_words = False
+
+    if not use_words:
+        # Generate random length between 20-30
+        length = random.randint(20, 30)
+        try:
+            result = subprocess.run(
+                [
+                    "pwgen",
+                    str(length),
+                    "1",
+                    "--secure",
+                    "--capitalize",
+                    "--numerals",
+                    "--symbols",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("Error: pwgen not found", file=sys.stderr)
+            sys.exit(1)
+
+
+def generate_credentials_file(args: GenerateArgs):
+    """Generate a new gopass credentials entry with random user_id and password."""
+    user_id = generate_random_user_id()
+    password = generate_password(use_words=args.words)
+
+    # Create the credentials content
+    content = f"{password}\nuser_id: {user_id}\n"
+
+    try:
+        # Insert into gopass using echo and pipe
+        subprocess.run(
+            ["gopass", "insert", "-m", args.path],
+            input=content,
+            text=True,
+            check=True,
+        )
+
+        print(f"Created credentials at: {args.path}")
+
+        # Open in editor for further customization
+        editor = subprocess.run(
+            ["gopass", "edit", args.path],
+            check=True,
+        )
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error creating credentials: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    """Main entry point for the sec script."""
+    args = parse_args()
+
+    match args.command:
+        case "copy":
+            assert args.copy is not None
+            copy_credentials(args.copy)
+        case "generate":
+            assert args.generate is not None
+            generate_credentials_file(args.generate)
+        case _:
+            raise ValueError(f"Unknown command: {args.command}")
+
+
+if __name__ == "__main__":
+    main()
