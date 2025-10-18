@@ -4,12 +4,72 @@ sec - A gopass credential management tool for copying and generating credentials
 """
 
 import argparse
+import os
 import random
 import string
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+# Embedded Neovim configuration content
+NVIM_INIT_LUA = """-- Neovim configuration for sec password manager
+
+-- Disable swap, backup, undo files, and shada for gopass temporary files
+-- This ensures sensitive password data is not written to disk
+vim.api.nvim_create_autocmd({ "BufNewFile", "BufRead" }, {
+	pattern = "/dev/shm/gopass*",
+	callback = function()
+		vim.opt_local.swapfile = false
+		vim.opt_local.backup = false
+		vim.opt_local.undofile = false
+		vim.opt.shada = ""
+	end,
+})
+
+-- Create commands to generate and insert credentials
+vim.api.nvim_create_user_command("SecGenUsername", function()
+	-- Generate username and insert at cursor position
+	local result = vim.fn.system("sec gen username")
+	local username = vim.fn.trim(result)
+	vim.api.nvim_put({ username }, "c", true, true)
+end, {})
+
+vim.api.nvim_create_user_command("SecGenPassword", function()
+	-- Generate password and insert at cursor position
+	local result = vim.fn.system("sec gen password")
+	local password = vim.fn.trim(result)
+	vim.api.nvim_put({ password }, "c", true, true)
+end, {})
+
+vim.api.nvim_create_user_command("SecGenPassphrase", function()
+	-- Generate passphrase using words and insert at cursor position
+	local result = vim.fn.system("sec gen password --words")
+	local passphrase = vim.fn.trim(result)
+	vim.api.nvim_put({ passphrase }, "c", true, true)
+end, {})
+
+-- Set leader key to space
+vim.g.mapleader = " "
+
+-- Create key mappings for the commands
+-- Delete from cursor to end of line before inserting
+vim.keymap.set("n", "<leader>su", "D:SecGenUsername<CR>", { desc = "Generate and insert username" })
+vim.keymap.set("n", "<leader>sp", "D:SecGenPassword<CR>", { desc = "Generate and insert password" })
+vim.keymap.set("n", "<leader>sw", "D:SecGenPassphrase<CR>", { desc = "Generate and insert passphrase" })
+
+-- Create key mappings for the commands in normal and insert mode
+-- Delete from cursor to end of line before inserting
+vim.keymap.set("n", "<M-u>", "D:SecGenUsername<CR>", { desc = "Generate and insert username" })
+vim.keymap.set("i", "<M-u>", "<Esc>D:SecGenUsername<CR>a", { desc = "Generate and insert username" })
+
+vim.keymap.set("n", "<M-p>", "D:SecGenPassword<CR>", { desc = "Generate and insert password" })
+vim.keymap.set("i", "<M-p>", "<Esc>D:SecGenPassword<CR>a", { desc = "Generate and insert password" })
+
+vim.keymap.set("n", "<M-w>", "D:SecGenPassphrase<CR>", { desc = "Generate and insert passphrase" })
+vim.keymap.set("i", "<M-w>", "<Esc>D:SecGenPassphrase<CR>a", { desc = "Generate and insert passphrase" })
+"""
 
 
 @dataclass
@@ -51,13 +111,29 @@ class ShowArgs:
 
 
 @dataclass
+class AddArgs:
+    """Arguments for the add command."""
+
+    path: str
+
+
+@dataclass
+class InstallArgs:
+    """Arguments for the install command."""
+
+    target: str
+
+
+@dataclass
 class Args:
     """Top-level arguments container."""
 
     command: str
+    add: Optional[AddArgs] = None
     copy: Optional[CopyArgs] = None
     edit: Optional[EditArgs] = None
     gen: Optional[GenArgs] = None
+    install: Optional[InstallArgs] = None
     practice: Optional[PracticeArgs] = None
     show: Optional[ShowArgs] = None
 
@@ -68,6 +144,13 @@ def parse_args() -> Args:
         description="Manage gopass credentials with copy and generate commands"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Add subcommand
+    add_parser = subparsers.add_parser("add", help="Add a new credentials entry")
+    add_parser.add_argument(
+        "path",
+        help="Path for the new credentials entry",
+    )
 
     # Copy subcommand
     copy_parser = subparsers.add_parser("copy", help="Copy credentials to clipboard")
@@ -110,6 +193,16 @@ def parse_args() -> Args:
         help="Generate a passphrase using xkcdpass instead of pwgen (for password/entry)",
     )
 
+    # Install subcommand
+    install_parser = subparsers.add_parser(
+        "install", help="Install configurations (e.g., nvim)"
+    )
+    install_parser.add_argument(
+        "target",
+        choices=["nvim"],
+        help="Installation target",
+    )
+
     # Practice subcommand
     practice_parser = subparsers.add_parser(
         "practice", help="Practice memorizing a password"
@@ -122,9 +215,7 @@ def parse_args() -> Args:
     )
 
     # Show subcommand
-    show_parser = subparsers.add_parser(
-        "show", help="Show credentials entry details"
-    )
+    show_parser = subparsers.add_parser("show", help="Show credentials entry details")
     show_parser.add_argument(
         "path",
         nargs="?",
@@ -136,6 +227,8 @@ def parse_args() -> Args:
 
     # Build structured Args based on command
     match parsed.command:
+        case "add":
+            return Args(command="add", add=AddArgs(path=parsed.path))
         case "copy":
             fields_list = [f.strip() for f in parsed.fields.split(",")]
             return Args(command="copy", copy=CopyArgs(fields=fields_list))
@@ -146,6 +239,8 @@ def parse_args() -> Args:
                 command="gen",
                 gen=GenArgs(type=parsed.type, path=parsed.path, words=parsed.words),
             )
+        case "install":
+            return Args(command="install", install=InstallArgs(target=parsed.target))
         case "practice":
             return Args(command="practice", practice=PracticeArgs(path=parsed.path))
         case "show":
@@ -203,6 +298,25 @@ def copy_field_to_clipboard(args: Args, field: str) -> bool:
             file=sys.stderr,
         )
         return False
+
+
+def add_credentials(args: Args):
+    """Create a new empty credentials entry and open it in the editor."""
+    assert args.add is not None
+
+    # Create an empty credentials entry
+    subprocess.run(
+        ["gopass", "insert", "-m", args.add.path],
+        input="",
+        text=True,
+        check=True,
+    )
+
+    # Open in editor for user to fill in
+    subprocess.run(
+        ["gopass", "edit", args.add.path],
+        check=True,
+    )
 
 
 def copy_credentials(args: Args):
@@ -333,10 +447,12 @@ def gen_and_copy(args: Args):
             return
         case "username":
             credential = generate_random_user_id()
-            print(f"Generated username: {credential}")
+            # Print credential to stdout for capture, message to stderr
+            print(credential)
         case "password":
             credential = generate_password(args.gen.words)
-            print("Generated password (copied to clipboard)")
+            # Print credential to stdout for capture, message to stderr
+            print(credential)
         case _:
             raise ValueError(f"Unknown type: {args.gen.type}")
 
@@ -420,17 +536,47 @@ def show_credentials(args: Args):
     )
 
 
+def install_nvim(args: Args):
+    """Install neovim configuration for sec."""
+    assert args.install is not None
+
+    # Determine neovim config directory
+    config_dir = Path.home() / ".config" / "nvim"
+    init_lua_path = config_dir / "init.lua"
+    init_vim_path = config_dir / "init.vim"
+
+    # Check if either init file already exists
+    if init_lua_path.exists() or init_vim_path.exists():
+        print(
+            "Error: Neovim configuration file already exists. Please back it up or remove it before installing.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Create config directory if it doesn't exist
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write the init.lua file
+    init_lua_path.write_text(NVIM_INIT_LUA)
+
+    print(f"Successfully installed neovim configuration to {init_lua_path}")
+
+
 def main():
     """Main entry point for the sec script."""
     args = parse_args()
 
     match args.command:
+        case "add":
+            add_credentials(args)
         case "copy":
             copy_credentials(args)
         case "edit":
             edit_credentials(args)
         case "gen":
             gen_and_copy(args)
+        case "install":
+            install_nvim(args)
         case "practice":
             practice_password(args)
         case "show":
