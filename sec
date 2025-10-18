@@ -21,18 +21,19 @@ class CopyArgs:
 
 
 @dataclass
-class GenerateArgs:
-    """Arguments for the generate command."""
-
-    path: str
-    words: bool = False
-
-
-@dataclass
 class EditArgs:
     """Arguments for the edit command."""
 
     path: Optional[str] = None
+
+
+@dataclass
+class GenArgs:
+    """Arguments for the gen command."""
+
+    type: str
+    path: Optional[str] = None
+    words: bool = False
 
 
 @dataclass
@@ -41,8 +42,8 @@ class Args:
 
     command: str
     copy: Optional[CopyArgs] = None
-    generate: Optional[GenerateArgs] = None
     edit: Optional[EditArgs] = None
+    gen: Optional[GenArgs] = None
 
 
 def parse_args() -> Args:
@@ -62,18 +63,6 @@ def parse_args() -> Args:
         help="Comma-separated field names to copy (default: user_id,password)",
     )
 
-    # Generate subcommand
-    gen_parser = subparsers.add_parser(
-        "generate", help="Generate a new credentials entry"
-    )
-    gen_parser.add_argument("path", help="Path for the new credentials entry")
-    gen_parser.add_argument(
-        "--words",
-        "-w",
-        action="store_true",
-        help="Generate a passphrase using xkcdpass instead of pwgen",
-    )
-
     # Edit subcommand
     edit_parser = subparsers.add_parser("edit", help="Edit a credentials entry")
     edit_parser.add_argument(
@@ -83,21 +72,44 @@ def parse_args() -> Args:
         help="Path to the credentials entry (uses fzf if not provided)",
     )
 
+    # Gen subcommand
+    gen_parser = subparsers.add_parser(
+        "gen", help="Generate username, password, or complete credentials entry"
+    )
+    gen_parser.add_argument(
+        "type",
+        choices=["username", "password", "entry"],
+        help="Type of credential to generate",
+    )
+    gen_parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Path for the credentials entry (required for 'entry' type)",
+    )
+    gen_parser.add_argument(
+        "--words",
+        "-w",
+        action="store_true",
+        help="Generate a passphrase using xkcdpass instead of pwgen (for password/entry)",
+    )
+
     parsed = parser.parse_args()
 
     # Build structured Args based on command
-    if parsed.command == "copy":
-        fields_list = [f.strip() for f in parsed.fields.split(",")]
-        return Args(command="copy", copy=CopyArgs(fields=fields_list))
-    elif parsed.command == "generate":
-        return Args(
-            command="generate",
-            generate=GenerateArgs(path=parsed.path, words=parsed.words),
-        )
-    elif parsed.command == "edit":
-        return Args(command="edit", edit=EditArgs(path=parsed.path))
-
-    return Args(command=parsed.command)
+    match parsed.command:
+        case "copy":
+            fields_list = [f.strip() for f in parsed.fields.split(",")]
+            return Args(command="copy", copy=CopyArgs(fields=fields_list))
+        case "edit":
+            return Args(command="edit", edit=EditArgs(path=parsed.path))
+        case "gen":
+            return Args(
+                command="gen",
+                gen=GenArgs(type=parsed.type, path=parsed.path, words=parsed.words),
+            )
+        case _:
+            return Args(command=parsed.command)
 
 
 def select_path_with_fzf() -> Optional[str]:
@@ -130,16 +142,17 @@ def copy_field_to_clipboard(args: Args, field: str) -> bool:
 
     try:
         # Use gopass's built-in clipboard functionality
-        if field.lower() == "password":
-            subprocess.run(
-                ["gopass", "show", "-c", args.copy.path],
-                check=True,
-            )
-        else:
-            subprocess.run(
-                ["gopass", "show", "-c", args.copy.path, field],
-                check=True,
-            )
+        match field.lower():
+            case "password":
+                subprocess.run(
+                    ["gopass", "show", "-c", args.copy.path],
+                    check=True,
+                )
+            case _:
+                subprocess.run(
+                    ["gopass", "show", "-c", args.copy.path, field],
+                    check=True,
+                )
         return True
 
     except subprocess.CalledProcessError:
@@ -188,11 +201,9 @@ def generate_random_user_id() -> str:
     return "".join(chars)
 
 
-def generate_password(args: Args) -> str:
+def generate_password(use_words: bool) -> str:
     """Generate a password using pwgen or xkcdpass."""
-    assert args.generate is not None
-
-    if args.generate.words:
+    if use_words:
         # Generate 20-word passphrase using xkcdpass
         result = subprocess.run(
             ["xkcdpass", "-n", "20"],
@@ -221,29 +232,27 @@ def generate_password(args: Args) -> str:
     return result.stdout.strip()
 
 
-def generate_credentials_file(args: Args):
+def generate_credentials_file(path: str, use_words: bool):
     """Generate a new gopass credentials entry with random user_id and password."""
-    assert args.generate is not None
-
     user_id = generate_random_user_id()
-    password = generate_password(args)
+    password = generate_password(use_words)
 
     # Create the credentials content
     content = f"{password}\nuser_id: {user_id}\n"
 
     # Insert into gopass using echo and pipe
     subprocess.run(
-        ["gopass", "insert", "-m", args.generate.path],
+        ["gopass", "insert", "-m", path],
         input=content,
         text=True,
         check=True,
     )
 
-    print(f"Created credentials at: {args.generate.path}")
+    print(f"Created credentials at: {path}")
 
     # Open in editor for further customization
     subprocess.run(
-        ["gopass", "edit", args.generate.path],
+        ["gopass", "edit", path],
         check=True,
     )
 
@@ -267,6 +276,37 @@ def edit_credentials(args: Args):
     )
 
 
+def gen_and_copy(args: Args):
+    """Generate username, password, or complete credentials entry."""
+    assert args.gen is not None
+
+    # Generate the credential based on type
+    match args.gen.type:
+        case "entry":
+            # Handle entry type separately - it doesn't copy to clipboard
+            if not args.gen.path:
+                print("Error: path is required for 'entry' type", file=sys.stderr)
+                sys.exit(1)
+            generate_credentials_file(args.gen.path, args.gen.words)
+            return
+        case "username":
+            credential = generate_random_user_id()
+            print(f"Generated username: {credential}")
+        case "password":
+            credential = generate_password(args.gen.words)
+            print("Generated password (copied to clipboard)")
+        case _:
+            raise ValueError(f"Unknown type: {args.gen.type}")
+
+    # Copy to clipboard using xclip
+    subprocess.run(
+        ["xclip", "-selection", "clipboard"],
+        input=credential,
+        text=True,
+        check=True,
+    )
+
+
 def main():
     """Main entry point for the sec script."""
     args = parse_args()
@@ -274,10 +314,10 @@ def main():
     match args.command:
         case "copy":
             copy_credentials(args)
-        case "generate":
-            generate_credentials_file(args)
         case "edit":
             edit_credentials(args)
+        case "gen":
+            gen_and_copy(args)
         case _:
             raise ValueError(f"Unknown command: {args.command}")
 
