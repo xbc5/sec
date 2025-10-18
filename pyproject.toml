@@ -1,11 +1,15 @@
 [project]
 name = "sec"
-version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.13"
+version = "1.0.0"
+description = "A gopass credential management tool for copying and generating credentials"
+requires-python = ">=3.10"
 dependencies = []
+
+[project.scripts]
+sec = "sec:main"
 
 [dependency-groups]
 dev = [
     "black>=25.9.0",
+    "pyinstaller>=6.0.0",
 ]
