@@ -71,6 +71,19 @@ vim.keymap.set("n", "<M-w>", "D:SecGenPassphrase<CR>", { desc = "Generate and in
 vim.keymap.set("i", "<M-w>", "<Esc>D:SecGenPassphrase<CR>a", { desc = "Generate and insert passphrase" })
 """
 
+# Embedded zsh aliases content
+ZSH_ALIASES = """# ----- GENERATED SEC ALIASES START -----
+alias sa='sec add'
+alias sc='sec copy'
+alias se='sec edit'
+alias sg='sec gen entry'
+alias sp='sec practice'
+alias ss='sec show'
+alias glo='git log --oneline --decorate --graph --all'
+alias pwstore="cd $HOME/.local/share/gopass/stores/root"
+# ----- GENERATED SEC ALIASES END -----
+"""
+
 
 @dataclass
 class CopyArgs:
@@ -195,11 +208,11 @@ def parse_args() -> Args:
 
     # Install subcommand
     install_parser = subparsers.add_parser(
-        "install", help="Install configurations (e.g., nvim)"
+        "install", help="Install configurations (e.g., nvim, zsh)"
     )
     install_parser.add_argument(
         "target",
-        choices=["nvim"],
+        choices=["nvim", "zsh"],
         help="Installation target",
     )
 
@@ -562,6 +575,27 @@ def install_nvim(args: Args):
     print(f"Successfully installed neovim configuration to {init_lua_path}")
 
 
+def install_zsh(args: Args):
+    """Install zsh aliases for sec into .zshrc."""
+    assert args.install is not None
+
+    # Determine .zshrc path
+    zshrc_path = Path.home() / ".zshrc"
+
+    # Check if aliases already exist by looking for the start marker
+    if zshrc_path.exists():
+        content = zshrc_path.read_text()
+        if "# ----- GENERATED SEC ALIASES START -----" in content:
+            print("sec aliases already installed in .zshrc", file=sys.stderr)
+            return
+
+    # Append aliases to .zshrc
+    with open(zshrc_path, "a") as f:
+        f.write("\n" + ZSH_ALIASES)
+
+    print(f"Successfully installed sec aliases to {zshrc_path}. Reload your shell.")
+
+
 def main():
     """Main entry point for the sec script."""
     args = parse_args()
@@ -576,7 +610,15 @@ def main():
         case "gen":
             gen_and_copy(args)
         case "install":
-            install_nvim(args)
+            # Route to appropriate install function based on target
+            assert args.install is not None
+            match args.install.target:
+                case "nvim":
+                    install_nvim(args)
+                case "zsh":
+                    install_zsh(args)
+                case _:
+                    raise ValueError(f"Unknown install target: {args.install.target}")
         case "practice":
             practice_password(args)
         case "show":
